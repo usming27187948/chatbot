@@ -1,6 +1,9 @@
 import whatsappService from './whatsappService.js';
 import appendToSheets from './googleSheetsService.js';
 import openAiService from './openAiService.js';
+import pool from '../config/db.js';
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
+
 //import geminiAiService from './geminiAiService.js';
 
 class MessageHandler {
@@ -8,10 +11,13 @@ class MessageHandler {
   constructor(){
     this.appointmentState = {};
     this.assistandState = {};
+    this.infoState = {};
   }
 
-
   async handleIncomingMessage(message, senderInfo) {
+    // Guardar cliente
+    await this.saveClient(senderInfo, message.from);
+
     if (message?.type === 'text') {
       const incomingMessage = message.text.body.toLowerCase().trim(); // Ultimas dos funciones para colocar en minuscula y quitar espacio
 
@@ -28,6 +34,8 @@ class MessageHandler {
         await this.handleAppointmentFlow(message.from, incomingMessage);
       } else if (this.assistandState[message.from]) {
         await this.handleAssistandFlow(message.from, incomingMessage);
+      }else if (this.infoState[message.from]) {
+        await this.handleInfoFlow(message.from, incomingMessage);
       } else {
         await this.handleMenuOption(message.from, incomingMessage);
       }
@@ -39,8 +47,43 @@ class MessageHandler {
     }
   }
 
+//Obtener y guardar nombre, email, telefono, pais, fecha
+  async saveClient(senderInfo, from) {
+    const nombre = senderInfo.profile?.name || '';
+    const telefono = from; // Número en formato internacional
+    const email = null; // Si no tienes email aún
+    const pais = this.getCountryFromPhone(from);  // Puedes parsear el prefijo si quieres
+    const fecha = new Date();
+
+    // Insertar en la tabla clientes
+    try {
+      await pool.query(
+        `INSERT INTO clientes (Nombre, Email, Telefono, Pais, Fecha_Solicitud)
+        VALUES (?, ?, ?, ?, ?)`,
+        [nombre, email, telefono, pais, fecha]
+      );
+    } catch (error) {
+      if (error.code === 'ER_DUP_ENTRY') {
+        console.log('Cliente ya existe.');
+      } else {
+        console.error('Error al insertar cliente:', error);
+      }
+    }
+  }
+
+//Obtneer pais
+  getCountryFromPhone(phone) {
+  try {
+    const phoneNumber = parsePhoneNumberFromString (`+${phone}`);
+    return phoneNumber.country || 'Desconocido';
+  } catch (e) {
+    return 'Desconocido';
+  }
+}
+
+
   isGreeting(message) {
-    const greetings = ["hola", "hello", "hi", "buenas tardes"];
+    const greetings = ["hola", "hello", "hi", "buenas tardes", "buenas", "buenos dias", "que tal", "buenas noches"];
     return greetings.includes(message);
   }
 
@@ -61,6 +104,7 @@ class MessageHandler {
     await whatsappService.sendMessage(to, welcomeMessage, messageId);
   }
 
+//MENU
   async sendWelcomeMenu(to) {
     const menuMessage = "Elige una Opción"
     const buttons = [
@@ -68,16 +112,17 @@ class MessageHandler {
         type: 'reply', reply: { id: 'agendar', title: 'Agendar con asesor' }
       },
       {
-        type: 'reply', reply: { id: 'consultar', title: 'Consultar'}
+        type: 'reply', reply: { id: 'consultar', title: 'Hablar con AI'}
       },
       {
-        type: 'reply', reply: { id: 'info', title: 'Más información'}
+        type: 'reply', reply: { id: 'info', title: 'Consultar producto'}
       }
     ];
 
     await whatsappService.sendInteractiveButtons(to, menuMessage, buttons);
   }
 
+//ACCIONES DEL MENU
   async handleMenuOption(to, option){
     let response;
     switch (option){
@@ -85,20 +130,66 @@ class MessageHandler {
         this.appointmentState[to] = { step : 'product'}
         response = "¿En qué producto o servicio estas interesado?";
         break;
+
       case 'consultar':
         this.assistandState[to] = { step: 'question' };
         response = "Realiza tu consulta";
         break;
+
       case 'info':
-        response = "Si necesitas informacion detallada, te invitamos a llamar a nuestra linea de atención";
-        await this.sendContact(to);
-        break
+        // Marcar que el usuario va a consultar un producto
+        this.infoState[to] = { step: 'awaitingProduct' };
+        response = "Por favor, escribe el nombre del producto que deseas consultar.";
+        break;
       default:
         response = 'Lo siento, no entendí tu selección, por favor elige una de las opciones del menu.'
 
     }
     await whatsappService.sendMessage(to, response);
   }
+
+//ACCION al seleccionar - case 'info': buscar producto
+  async handleInfoFlow(to, message) {
+    const searchTerm = message;
+
+    const products = await this.getProductByName(searchTerm);
+
+    if (products.length > 0) {
+      let response = 'Encontré estos productos:\n\n';
+      products.forEach((p) => {
+        response += `• ${p.Nombre} (${p.Categoria}) - $${p.Precio}\n`;
+      });
+      await whatsappService.sendMessage(to, response);
+       // Registrar la interacción
+        await this.saveInterest(to, searchTerm);
+    } else {
+      await whatsappService.sendMessage(
+        to,
+        'No encontré productos con ese nombre.'
+      );
+    }
+
+    // Eliminar estado después de responder
+    delete this.infoState[to];
+  }
+
+//BUSCAR PRODUCTO EN LA BASE DE DATOS
+  async getProductByName(productName) {
+    try {
+      const [rows] = await pool.query(
+        `SELECT p.Nombre, p.Precio, c.Nombre AS Categoria
+        FROM productos p
+        LEFT JOIN categoria c ON p.ID_Categoria = c.ID_Categoria
+        WHERE p.Nombre LIKE ?`,
+        [`%${productName}%`]
+      );
+      return rows;
+    } catch (error) {
+      console.error('Error al consultar producto:', error);
+      return [];
+    }
+  }
+
 
   // CASE para seleccionar el tipo de MEDIA a enviar
   async sendMedia (to, type) {
@@ -153,23 +244,26 @@ completeAppointment(to){
     to,
     appointment.product,
     appointment.sectorInd,
-    appointment.contactType,
+    appointment.email,
     new Date().toISOString()
   ]
 
   appendToSheets(userData);
 
-  return `Gracias por agendar tu cita.
-  Resumen de tu cita:
+  // 🟢 Guardar en la base de datos
+  this.saveAppointment(to, appointment);
+
+  return `Gracias por agendar con nosotros.
+  Resumen de tu solicitud:
 
   Producto o servicio: ${appointment.product}
   Sector industrial: ${appointment.sectorInd}
-  Medio de contacto: ${appointment.contactType}
+  Correo: ${appointment.email}
 
   Nos pondremos en contacto muy pronto.`
 }
 
-  async handleAppointmentFlow(to, message) { // AGENDAR CITA
+  async handleAppointmentFlow(to, message) { // AGENDAR REUNION
     const state = this.appointmentState[to];
     let response;
 
@@ -182,16 +276,93 @@ completeAppointment(to){
 
       case 'sectorInd':
         state.sectorInd = message;
-        state.step = 'contactType';
-        response = '¿Por cuál medio deseas que te contactemos?'
+        state.step = 'email';
+        response = 'Indícanos tu correo electrónico'
         break;
 
-      case 'contactType':
-        state.contactType = message;
+      case 'email':
+        state.email = message;
         response = this.completeAppointment(to);
         break;
     }
      await whatsappService.sendMessage(to, response);
+  }
+
+//Guardar en BD - tabla "Reunion"
+  async saveAppointment(to, appointment) {
+    try {
+      // Buscar el cliente por su teléfono
+      const [clients] = await pool.query(
+        'SELECT ID_Cliente FROM clientes WHERE Telefono = ?',
+        [to]
+      );
+
+      if (clients.length === 0) {
+        console.log('Cliente no encontrado, no se puede guardar la reunión.');
+        return;
+      }
+
+      const idCliente = clients[0].ID_Cliente;
+
+      // Insertar la reunión
+      await pool.query(
+        `INSERT INTO reunion 
+          (ID_Cliente, Producto, Sector_Industrial, Correo)
+        VALUES (?, ?, ?, ?)`,
+        [
+          idCliente,
+          appointment.product,
+          appointment.sectorInd,
+          appointment.email
+        ]
+      );
+
+      console.log(`Reunión registrada para el cliente ${idCliente}`);
+    } catch (error) {
+      console.error('Error al guardar la reunión:', error);
+    }
+  }
+
+//Guardar info de cliente en "intereses_clientes" cuando pregunté por un producto
+  async saveInterest(to, productName) {
+    try {
+      // Buscar ID_Cliente
+      const [clients] = await pool.query(
+        'SELECT ID_Cliente FROM clientes WHERE Telefono = ?',
+        [to]
+      );
+
+      if (clients.length === 0) {
+        console.log('Cliente no encontrado.');
+        return;
+      }
+
+      const idCliente = clients[0].ID_Cliente;
+
+      // Buscar ID_Producto
+      const [products] = await pool.query(
+        'SELECT ID_Producto FROM productos WHERE Nombre LIKE ? LIMIT 1',
+        [`%${productName}%`]
+      );
+
+      if (products.length === 0) {
+        console.log('Producto no encontrado.');
+        return;
+      }
+
+      const idProducto = products[0].ID_Producto;
+
+      // Insertar interacción
+      await pool.query(
+        `INSERT INTO intereses_clientes (ID_Cliente, ID_Producto)
+        VALUES (?, ?)`,
+        [idCliente, idProducto]
+      );
+
+      console.log(`Interacción registrada: Cliente ${idCliente}, Producto ${idProducto}`);
+    } catch (error) {
+      console.error('Error al registrar interés:', error);
+    }
   }
 
   //Consultar con ChatGPT
@@ -215,6 +386,7 @@ completeAppointment(to){
     await whatsappService.sendInteractiveButtons(to, menuMessage, buttons);
   }
 
+  //Enviar tarjeta de contacto a cliente, seleccionado en el primer menu
   async sendContact(to){
     const contact = {
       addresses: [
