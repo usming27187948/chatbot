@@ -12,12 +12,46 @@ class MessageHandler {
     this.appointmentState = {};
     this.assistandState = {};
     this.infoState = {};
+    this.conversationState = {}; // ⬅️ Aquí guardaremos la última vez que interactuó
   }
 
   async handleIncomingMessage(message, senderInfo) {
-    // Guardar cliente
-    await this.saveClient(senderInfo, message.from);
+    // Guardar cliente y sesion
+    const now = Date.now();
+    const session = this.conversationState[message.from];
 
+    // Aquí defines tiempo fijo para todos
+    const expiration = 10 * 60 * 1000; // 10 minutos en milisegundos
+
+    if (!session || now - session.lastInteraction > expiration) {
+      // Cerrar sesión anterior si existía
+      if (session && session.sessionId) {
+        await this.endSession(session.sessionId);
+      }
+
+      // Guardar cliente si es necesario
+      await this.saveClient(senderInfo, message.from);
+
+      // Iniciar nueva sesión
+      const sessionId = await this.startSession(message.from);
+
+      // Registrar nuevo estado de sesión
+      this.conversationState[message.from] = {
+        lastInteraction: now,
+        sessionId
+      };
+
+      console.log(`Nueva conversación iniciada para ${message.from}`);
+      await whatsappService.sendMessage(
+        message.from,
+        '👋 ¡Hola! Hemos iniciado una nueva conversación.'
+      );
+    } else {
+      // Sesión activa
+      this.conversationState[message.from].lastInteraction = now;
+    }
+
+//INICIO DE CONVERSSACION
     if (message?.type === 'text') {
       const incomingMessage = message.text.body.toLowerCase().trim(); // Ultimas dos funciones para colocar en minuscula y quitar espacio
 
@@ -46,6 +80,58 @@ class MessageHandler {
       await whatsappService.markAsRead(message.id);
     }
   }
+
+//Guardar la sesión en base de datos
+async startSession(to) {
+  // Buscar el ID_Cliente por el teléfono
+  const [clients] = await pool.query(
+    'SELECT ID_Cliente FROM clientes WHERE Telefono = ?',
+    [to]
+  );
+
+  if (clients.length === 0) {
+    console.log('No se encontró el cliente para iniciar sesión.');
+    return;
+  }
+
+  const idCliente = clients[0].ID_Cliente;
+
+  // Insertar la sesión
+  const [result] = await pool.query(
+    `INSERT INTO sesiones_chat (ID_Cliente) VALUES (?)`,
+    [idCliente]
+  );
+
+  console.log(`Sesión iniciada para cliente ${idCliente}`);
+  return result.insertId; // Devuelve el ID de la sesión
+}
+//Este marcará el cierre de la sesión
+async endSession(sessionId) {
+  // Obtener el teléfono si quieres enviar mensaje
+  const [rows] = await pool.query(`
+    SELECT c.Telefono
+    FROM sesiones_chat s
+    JOIN clientes c ON s.ID_Cliente = c.ID_Cliente
+    WHERE s.ID_Sesion = ?
+  `, [sessionId]);
+
+  await pool.query(
+    `UPDATE sesiones_chat SET Fecha_Fin = NOW() WHERE ID_Sesion = ?`,
+    [sessionId]
+  );
+
+  if (rows.length > 0) {
+    const telefono = rows[0].Telefono;
+    await whatsappService.sendMessage(
+      telefono,
+      '✅ La conversación se ha cerrado por inactividad. Cuando gustes, vuelve a escribir.'
+    );
+  }
+
+  console.log(`Sesión ${sessionId} finalizada.`);
+}
+
+
 
 //Obtener y guardar nombre, email, telefono, pais, fecha
   async saveClient(senderInfo, from) {
@@ -100,7 +186,7 @@ class MessageHandler {
     const name = this.getSenderName(senderInfo);
     const firstName = name.split(' ')[0];   // Extraer primer nombre
     const formatName = firstName.replace(/[^a-zA-Z\s]/g, ''); // Fomatear nombre sin emojis
-    const welcomeMessage = `Hola ${formatName}, Bienvenido a InspectBOT. ¿En qué puedo ayudarte hoy?`;
+    const welcomeMessage = `${formatName}, bienvenido a InspectBOT. ¿En qué puedo ayudarte hoy?`;
     await whatsappService.sendMessage(to, welcomeMessage, messageId);
   }
 
@@ -248,7 +334,8 @@ completeAppointment(to){
     new Date().toISOString()
   ]
 
-  appendToSheets(userData);
+  //Anadir reservas en GoogleSheets
+  //appendToSheets(userData);
 
   // 🟢 Guardar en la base de datos
   this.saveAppointment(to, appointment);
@@ -372,7 +459,7 @@ completeAppointment(to){
 
     const menuMessage = "La respuesta fue de tu ayuda?"
     const buttons = [
-      { type: 'reply', reply: { id: 'option_4', title: "Si, Gracias" } },
+      { type: 'reply', reply: { id: 'option_4', title: "Si, gracias" } },
       { type: 'reply', reply: { id: 'consultar', title: 'Hacer otra pregunta'}}
     ];
 
