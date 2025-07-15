@@ -1,13 +1,14 @@
 import { Bar } from 'react-chartjs-2';
 import { useEffect, useState } from 'react';
-import axios from 'axios';
+//import axios from 'axios';
+import axios from '../axiosInstance';
 
 const ReunionsByProductChart = () => {
   const [data, setData] = useState({ labels: [], counts: [] });
 
   useEffect(() => {
     axios
-      .get('http://localhost:3000/api/stats/reunions/by-product')
+      .get('/reunions/by-product')
       .then((res) => {
         setData({
           labels: res.data.map(p => p.Producto),

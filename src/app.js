@@ -3,6 +3,7 @@ import express from 'express';
 import config from './config/env.js';
 import webhookRoutes from './routes/webhookRoutes.js';
 import statsRoutes from './routes/statsRoutes.js'; // <-- Este es el nuevo
+import authRoutes from './routes/authRoutes.js';  
 import cors from 'cors';
 
 // 2️⃣ CREAR APP
@@ -17,6 +18,8 @@ app.use(express.json());
 // 4️⃣ RUTAS
 app.use('/', webhookRoutes);
 app.use('/api/stats', statsRoutes); // <-- Aquí montas el middleware de stats
+app.use('/api/auth', authRoutes);
+
 
 // 5️⃣ RUTA DE PRUEBA
 app.get('/', (req, res) => {

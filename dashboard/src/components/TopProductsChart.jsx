@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from 'chart.js';
 import { Bar } from 'react-chartjs-2';
-import axios from 'axios';
+//import axios from 'axios';
+import axios from '../axiosInstance';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
@@ -11,7 +12,7 @@ const TopProductsChart = () => {
 
   useEffect(() => {
     axios
-      .get('http://localhost:3000/api/stats/interactions/by-product')
+      .get('/interactions/by-product')
       .then((res) => {
         setData({
           labels: res.data.map((p) => p.Nombre),

@@ -16,40 +16,54 @@ class MessageHandler {
   }
 
   async handleIncomingMessage(message, senderInfo) {
-    // Guardar cliente y sesion
     const now = Date.now();
     const session = this.conversationState[message.from];
-
-    // Aquí defines tiempo fijo para todos
-    const expiration = 10 * 60 * 1000; // 10 minutos en milisegundos
+    const expiration = 10 * 60 * 1000; // 10 minutos
 
     if (!session || now - session.lastInteraction > expiration) {
-      // Cerrar sesión anterior si existía
-      if (session && session.sessionId) {
+      // Si había sesión activa, cancelamos su timeout y la cerramos
+      if (session && session.timeoutId) {
+        clearTimeout(session.timeoutId);
         await this.endSession(session.sessionId);
       }
 
-      // Guardar cliente si es necesario
+      // Guardar cliente
       await this.saveClient(senderInfo, message.from);
 
       // Iniciar nueva sesión
       const sessionId = await this.startSession(message.from);
 
-      // Registrar nuevo estado de sesión
+      // Programar cierre automático
+      const timeoutId = setTimeout(async () => {
+        await this.closeSession(message.from, sessionId);
+      }, expiration);
+
+      // Registrar estado en memoria
       this.conversationState[message.from] = {
         lastInteraction: now,
-        sessionId
+        sessionId,
+        timeoutId
       };
 
       console.log(`Nueva conversación iniciada para ${message.from}`);
       await whatsappService.sendMessage(
         message.from,
-        '👋 ¡Hola! Hemos iniciado una nueva conversación.'
+        '👋 ¡Hola! Hemos iniciado una nueva conversación. ¿Cómo puedo ayudarte?'
       );
     } else {
-      // Sesión activa
-      this.conversationState[message.from].lastInteraction = now;
+      // Sesión activa, actualizamos tiempo y reprogramamos timeout
+      clearTimeout(session.timeoutId);
+      const timeoutId = setTimeout(async () => {
+        await this.closeSession(message.from, session.sessionId);
+      }, expiration);
+
+      this.conversationState[message.from] = {
+        ...session,
+        lastInteraction: now,
+        timeoutId
+      };
     }
+
 
 //INICIO DE CONVERSSACION
     if (message?.type === 'text') {
@@ -130,6 +144,17 @@ async endSession(sessionId) {
 
   console.log(`Sesión ${sessionId} finalizada.`);
 }
+async closeSession(phone, sessionId) {
+  // Actualizar la sesión en BD
+  await this.endSession(sessionId);
+
+
+  // Eliminar de memoria
+  delete this.conversationState[phone];
+
+  console.log(`Sesión cerrada automáticamente por inactividad: ${phone}`);
+}
+
 
 
 
@@ -524,6 +549,31 @@ completeAppointment(to){
     await whatsappService.sendContactMessage(to, contact);
   
   }
+
+//CONTADOR mensajes
+async incrementMessageCount(phone) {
+  const [clients] = await pool.query(
+    'SELECT ID_Cliente FROM clientes WHERE Telefono = ?',
+    [phone]
+  );
+
+  if (clients.length === 0) {
+    console.log('Cliente no encontrado.');
+    return;
+  }
+
+  const idCliente = clients[0].ID_Cliente;
+
+  await pool.query(
+    `UPDATE clientes 
+     SET Cantidad_Mensajes = Cantidad_Mensajes + 1
+     WHERE ID_Cliente = ?`,
+    [idCliente]
+  );
+
+  console.log(`Mensajes incrementados para cliente ${idCliente}`);
+}
+
 
 }
 

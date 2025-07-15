@@ -1,24 +1,19 @@
 import { useEffect, useState } from 'react';
-import axios from 'axios';
+//import axios from 'axios';
+import axios from '../axiosInstance';
 
 const RecentInteractionsPanel = () => {
   const [interactions, setInteractions] = useState([]);
 
   useEffect(() => {
     axios
-      .get('http://localhost:3000/api/stats/interactions/recent')
+      .get('/interactions/recent')
       .then((res) => setInteractions(res.data))
       .catch((err) => console.error(err));
   }, []);
 
   return (
-    <div style={{
-      border: '1px solid #ccc',
-      padding: '1rem',
-      borderRadius: '8px',
-      width: '600px',
-      background: '#f9f9f9'
-    }}>
+    <div className="card">
       <h3>Últimas Interacciones</h3>
       {interactions.length === 0 ? (
         <p>No hay interacciones recientes.</p>
